@@ -3,7 +3,7 @@
 // Note that this is v2.0 of lumberjack, and should be imported using gopkg.in
 // thusly:
 //
-//   import "gopkg.in/natefinch/lumberjack.v2"
+//	import "gopkg.in/natefinch/lumberjack.v2"
 //
 // The package name remains simply lumberjack, and the code resides at
 // https://github.com/natefinch/lumberjack under the v2.0 branch.
@@ -22,7 +22,6 @@
 package lumberjack
 
 import (
-	"compress/gzip"
 	"errors"
 	"fmt"
 	"io"
@@ -33,11 +32,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/pierrec/lz4/v4"
 )
 
 const (
 	backupTimeFormat = "2006-01-02T15-04-05.000"
-	compressSuffix   = ".gz"
+	compressSuffix   = ".lz4"
 	defaultMaxSize   = 100
 )
 
@@ -66,7 +67,7 @@ var _ io.WriteCloser = (*Logger)(nil)
 // `/var/log/foo/server.log`, a backup created at 6:30pm on Nov 11 2016 would
 // use the filename `/var/log/foo/server-2016-11-04T18-30-00.000.log`
 //
-// Cleaning Up Old Log Files
+// # Cleaning Up Old Log Files
 //
 // Whenever a new logfile gets created, old log files may be deleted.  The most
 // recent files according to the encoded timestamp will be retained, up to a
@@ -104,7 +105,7 @@ type Logger struct {
 	LocalTime bool `json:"localtime" yaml:"localtime"`
 
 	// Compress determines if the rotated log files should be compressed
-	// using gzip. The default is not to perform compression.
+	// using lz4. The default is not to perform compression.
 	Compress bool `json:"compress" yaml:"compress"`
 
 	size int64
@@ -206,13 +207,13 @@ func (l *Logger) rotate() error {
 // openNew opens a new log file for writing, moving any old log file out of the
 // way.  This methods assumes the file has already been closed.
 func (l *Logger) openNew() error {
-	err := os.MkdirAll(l.dir(), 0755)
+	err := os.MkdirAll(l.dir(), 0o755)
 	if err != nil {
 		return fmt.Errorf("can't make directories for new logfile: %s", err)
 	}
 
 	name := l.filename()
-	mode := os.FileMode(0600)
+	mode := os.FileMode(0o600)
 	info, err := osStat(name)
 	if err == nil {
 		// Copy the mode off the old logfile.
@@ -277,7 +278,7 @@ func (l *Logger) openExistingOrNew(writeLen int) error {
 		return l.rotate()
 	}
 
-	file, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY, 0644)
+	file, err := os.OpenFile(filename, os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		// if we fail to open the old log file for some reason, just ignore
 		// it and open a new log file.
@@ -483,13 +484,16 @@ func compressLogFile(src, dst string) (err error) {
 
 	// If this file already exists, we presume it was created by
 	// a previous attempt to compress the log file.
-	gzf, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fi.Mode())
+	cf, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, fi.Mode())
 	if err != nil {
 		return fmt.Errorf("failed to open compressed log file: %v", err)
 	}
-	defer gzf.Close()
+	defer cf.Close()
 
-	gz := gzip.NewWriter(gzf)
+	cw, err := newCompressor(cf, fi.Size())
+	if err != nil {
+		return fmt.Errorf("failed to initialize compressor: %v", err)
+	}
 
 	defer func() {
 		if err != nil {
@@ -498,13 +502,13 @@ func compressLogFile(src, dst string) (err error) {
 		}
 	}()
 
-	if _, err := io.Copy(gz, f); err != nil {
+	if _, err := io.Copy(cw, f); err != nil {
 		return err
 	}
-	if err := gz.Close(); err != nil {
+	if err := cw.Close(); err != nil {
 		return err
 	}
-	if err := gzf.Close(); err != nil {
+	if err := cf.Close(); err != nil {
 		return err
 	}
 
@@ -538,4 +542,18 @@ func (b byFormatTime) Swap(i, j int) {
 
 func (b byFormatTime) Len() int {
 	return len(b)
+}
+
+func newCompressor(w io.Writer, size int64) (io.WriteCloser, error) {
+	lz := lz4.NewWriter(w)
+
+	if err := lz.Apply(
+		lz4.CompressionLevelOption(lz4.Level9),
+		lz4.ConcurrencyOption(0),
+		lz4.SizeOption(uint64(size)),
+	); err != nil {
+		return nil, err
+	}
+
+	return lz, nil
 }

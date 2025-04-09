@@ -2,7 +2,6 @@ package lumberjack
 
 import (
 	"bytes"
-	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -51,7 +50,7 @@ func TestOpenExisting(t *testing.T) {
 
 	filename := logFile(dir)
 	data := []byte("foo!")
-	err := ioutil.WriteFile(filename, data, 0644)
+	err := ioutil.WriteFile(filename, data, 0o644)
 	isNil(err, t)
 	existsWithContent(filename, data, t)
 
@@ -176,7 +175,7 @@ func TestFirstWriteRotate(t *testing.T) {
 	defer l.Close()
 
 	start := []byte("boooooo!")
-	err := ioutil.WriteFile(filename, start, 0600)
+	err := ioutil.WriteFile(filename, start, 0o600)
 	isNil(err, t)
 
 	newFakeTime()
@@ -265,13 +264,13 @@ func TestMaxBackups(t *testing.T) {
 	// create a file that is close to but different from the logfile name.
 	// It shouldn't get caught by our deletion filters.
 	notlogfile := logFile(dir) + ".foo"
-	err = ioutil.WriteFile(notlogfile, []byte("data"), 0644)
+	err = ioutil.WriteFile(notlogfile, []byte("data"), 0o644)
 	isNil(err, t)
 
 	// Make a directory that exactly matches our log file filters... it still
 	// shouldn't get caught by the deletion filter since it's a directory.
 	notlogfiledir := backupFile(dir)
-	err = os.Mkdir(notlogfiledir, 0700)
+	err = os.Mkdir(notlogfiledir, 0o700)
 	isNil(err, t)
 
 	newFakeTime()
@@ -283,7 +282,7 @@ func TestMaxBackups(t *testing.T) {
 	// not be counted since both the compressed and the uncompressed
 	// log files still exist.
 	compLogFile := fourthFilename + compressSuffix
-	err = ioutil.WriteFile(compLogFile, []byte("compress"), 0644)
+	err = ioutil.WriteFile(compLogFile, []byte("compress"), 0o644)
 	isNil(err, t)
 
 	// this will make us rotate again
@@ -332,24 +331,24 @@ func TestCleanupExistingBackups(t *testing.T) {
 
 	data := []byte("data")
 	backup := backupFile(dir)
-	err := ioutil.WriteFile(backup, data, 0644)
+	err := ioutil.WriteFile(backup, data, 0o644)
 	isNil(err, t)
 
 	newFakeTime()
 
 	backup = backupFile(dir)
-	err = ioutil.WriteFile(backup+compressSuffix, data, 0644)
+	err = ioutil.WriteFile(backup+compressSuffix, data, 0o644)
 	isNil(err, t)
 
 	newFakeTime()
 
 	backup = backupFile(dir)
-	err = ioutil.WriteFile(backup, data, 0644)
+	err = ioutil.WriteFile(backup, data, 0o644)
 	isNil(err, t)
 
 	// now create a primary log file with some data
 	filename := logFile(dir)
-	err = ioutil.WriteFile(filename, data, 0644)
+	err = ioutil.WriteFile(filename, data, 0o644)
 	isNil(err, t)
 
 	l := &Logger{
@@ -450,7 +449,7 @@ func TestOldLogFiles(t *testing.T) {
 
 	filename := logFile(dir)
 	data := []byte("data")
-	err := ioutil.WriteFile(filename, data, 07)
+	err := ioutil.WriteFile(filename, data, 0o7)
 	isNil(err, t)
 
 	// This gives us a time with the same precision as the time we get from the
@@ -459,7 +458,7 @@ func TestOldLogFiles(t *testing.T) {
 	isNil(err, t)
 
 	backup := backupFile(dir)
-	err = ioutil.WriteFile(backup, data, 07)
+	err = ioutil.WriteFile(backup, data, 0o7)
 	isNil(err, t)
 
 	newFakeTime()
@@ -468,7 +467,7 @@ func TestOldLogFiles(t *testing.T) {
 	isNil(err, t)
 
 	backup2 := backupFile(dir)
-	err = ioutil.WriteFile(backup2, data, 07)
+	err = ioutil.WriteFile(backup2, data, 0o7)
 	isNil(err, t)
 
 	l := &Logger{Filename: filename}
@@ -625,10 +624,11 @@ func TestCompressOnRotate(t *testing.T) {
 	// a compressed version of the log file should now exist and the original
 	// should have been removed.
 	bc := new(bytes.Buffer)
-	gz := gzip.NewWriter(bc)
-	_, err = gz.Write(b)
+	cw, err := newCompressor(bc, int64(len(b)))
 	isNil(err, t)
-	err = gz.Close()
+	_, err = cw.Write(b)
+	isNil(err, t)
+	err = cw.Close()
 	isNil(err, t)
 	existsWithContent(backupFile(dir)+compressSuffix, bc.Bytes(), t)
 	notExist(backupFile(dir), t)
@@ -654,9 +654,9 @@ func TestCompressOnResume(t *testing.T) {
 	// Create a backup file and empty "compressed" file.
 	filename2 := backupFile(dir)
 	b := []byte("foo!")
-	err := ioutil.WriteFile(filename2, b, 0644)
+	err := ioutil.WriteFile(filename2, b, 0o644)
 	isNil(err, t)
-	err = ioutil.WriteFile(filename2+compressSuffix, []byte{}, 0644)
+	err = ioutil.WriteFile(filename2+compressSuffix, []byte{}, 0o644)
 	isNil(err, t)
 
 	newFakeTime()
@@ -674,10 +674,11 @@ func TestCompressOnResume(t *testing.T) {
 	// The write should have started the compression - a compressed version of
 	// the log file should now exist and the original should have been removed.
 	bc := new(bytes.Buffer)
-	gz := gzip.NewWriter(bc)
-	_, err = gz.Write(b)
+	cw, err := newCompressor(bc, int64(len(b)))
 	isNil(err, t)
-	err = gz.Close()
+	_, err = cw.Write(b)
+	isNil(err, t)
+	err = cw.Close()
 	isNil(err, t)
 	existsWithContent(filename2+compressSuffix, bc.Bytes(), t)
 	notExist(filename2, t)
@@ -713,7 +714,7 @@ func TestJson(t *testing.T) {
 func makeTempDir(name string, t testing.TB) string {
 	dir := time.Now().Format(name + backupTimeFormat)
 	dir = filepath.Join(os.TempDir(), dir)
-	isNilUp(os.Mkdir(dir, 0700), t, 1)
+	isNilUp(os.Mkdir(dir, 0o700), t, 1)
 	return dir
 }
 
